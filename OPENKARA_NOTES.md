@@ -1,0 +1,225 @@
+# OpenKara scoping notes — karaoke lyrics pipeline
+
+Findings from reading `thedavidweng/OpenKara` @ main (Apache-2.0, Tauri 2 + Rust + React).
+Source: `src-tauri/src/lyrics/` — `fetch.rs`, `parser.rs`, `acquisition.rs`.
+
+## The big one: no fork needed
+
+OpenKara's lyrics acquisition chain is:
+
+```
+cache → embedded tags → TTML/LYS/LRC sidecar → AMLL → LRCLIB → LrcApi
+```
+
+Local sidecars are consulted **before** any network source. A generated sidecar
+always wins over LRCLIB, so public-domain songs that LRCLIB has never heard of
+work fine. No code change to OpenKara required.
+
+## Sidecar rules (`fetch.rs::read_sidecar_lyrics`)
+
+- Must sit in the **same directory** as the audio file with the **same file stem**.
+  `Danny Boy.mp3` → `Danny Boy.lrc`
+- Extensions are case-insensitive. Priority: `.ttml` > `.lys` > `.lrc`
+- A sidecar that fails to parse is silently skipped and the chain continues —
+  so a malformed file degrades to "no lyrics", it doesn't error.
+- `.lrc` is in the importable-extensions list (`import/expand.rs`), and import
+  treats `lrc` and `cdg` as sidecar companions. Put the `.lrc` next to the audio
+  **before** importing into OpenKara.
+
+## Enhanced LRC is supported → word-by-word highlighting for free
+
+`parser.rs::parse_word_tokens` handles inline `<mm:ss.xx>` word tags. Its own
+test fixture:
+
+```
+[00:12.00]<00:12.00>I <00:12.30>see <00:12.60>trees
+```
+
+Rules worth knowing:
+- Line-level `[mm:ss.xx]` tag is still required at line start.
+- Word `end_ms` is inferred: next word's start, or +500ms for the last word.
+  So you only need per-word **start** times.
+- Timestamps accept `.` or `:` as the fractional separator, and the fractional
+  part is optional.
+- Mixed plain and word-timed lines in one file are fine.
+
+`LYS` is the other word-timed format: `[0]Hello(1000,500) World(1500,500)`
+(absolute ms, start + duration). TTML is the richest — it's what AMLL serves and
+it's the only source allowed to word-time-upgrade a cached line-timed entry.
+LRC is the path of least resistance and gets you the same karaoke fill.
+
+## `karaoke_lrc.py`
+
+Generates enhanced LRC. Pipeline: Demucs two-stem vocal isolation → WhisperX
+transcribe + forced alignment → grouped lines → `.lrc` next to the audio.
+
+Verified from here: timestamp formatting, line grouping, and output shape round-trip
+against a reimplementation of OpenKara's parser rules.
+
+Line-breaking constants are at the top of the file (`TARGET_LINE_CHARS`,
+`LINE_COST`, `BREAK_*` weights, …). Higher `LINE_COST` = fewer, longer lines.
+
+## First real run — 2026-09-18 (Windows 10, RTX 3070 Ti 8 GB, Python 3.11)
+
+Setup: `uv sync`. `pyproject.toml` + `uv.lock` pin the working set: Python 3.11
+(whisperx needs 3.10–3.13), whisperx 3.8.6, demucs 4.1.0, and torch 2.8.0 /
+torchaudio 2.8.0 / torchvision 0.23.0 from the **cu128** index. PyPI's Windows
+torch wheels are CPU-only, so those three are routed there via
+`[tool.uv.sources]`. torchvision is only a whisperx dependency, but it's listed
+directly so the source applies. Run with `uv run karaoke_lrc.py …`.
+(Originally set up with pip; moved to uv the same day.)
+
+Bugs found and fixed in `karaoke_lrc.py`:
+- Demucs was called as `demucs` on PATH → silently skipped unless the venv was
+  activated. Now `python -m demucs` via the running interpreter.
+- Language auto-detect listens to the first 30 s — often an instrumental intro.
+  It picked Norwegian on one song, pulled a 3.6 GB alignment model and aligned
+  English with it. Default is now `--language en`; `--language auto` still exists.
+- Interleaving Demucs (child process) with WhisperX (~4.5 GB VRAM) overflowed
+  8 GB into shared memory: 6 songs took 55 min. Now all separation runs first,
+  then WhisperX loads once — same 6 songs in ~2 min.
+- Demucs' default single random shift made every run's output differ; now
+  `--shifts 0`, so the same input always gives the same `.lrc`.
+- UTF-8 output on Windows; "Mr." no longer ends a line.
+
+Line breaking rewritten: per-gap break scores (next word capitalised — Whisper
+capitalises lyric-line starts, and it's the best single cue at 80% precision;
+segment boundary; punctuation; silence) + whole-song optimal layout instead of
+greedy rules. Pauses turned out to be a weak cue (held notes mid-line).
+
+Benchmark (first pass): 3 English songs from [JamendoLyrics](https://huggingface.co/datasets/jamendolyrics/jamendolyrics)
+(word-level ground truth) + 3 public-domain 78s in `test_songs/`. Later expanded
+to all 20 English songs, see "Repeated lines" below. Score with
+`uv run eval_lrc.py test_songs\*.lrc`.
+
+| song | word recall | median onset error | mean onset error | line-break F1 |
+|---|---|---|---|---|
+| hip-hop | 88% | 0.05 s | 0.06 s | 82% |
+| acoustic pop | 93% | 0.06 s | 0.11 s | 78% |
+| rock, non-native singer | 45% | 0.15 s | 0.69 s | 72% |
+
+Line-break F1 before the rewrite was 66% / 42% / 26%.
+
+### Larger alignment model (same day)
+
+WhisperX's English aligner (`WAV2VEC2_ASR_BASE_960H`) crammed repeated lines
+into the first repeat. In the acoustic-pop song, the third chorus's four "I want
+you to feel" repeats all started within 4 s, with the last two 5–6 s early. The
+cause is that the aligner confuses identical repeats, so choosing when to break
+lines doesn't help. Switching to `WAV2VEC2_ASR_LARGE_LV60K_960H` (now the
+English default, `--align-model` to override):
+
+| song | mean onset error | onsets >1 s off | line-break F1 |
+|---|---|---|---|
+| acoustic pop | 0.39 → 0.11 s | 7% → 1% | 82% → 78% |
+| rock | 0.71 → 0.69 s | 11% → 11% | 72% (same) |
+| hip-hop | 0.06 s (same) | 0% (same) | 82% (same) |
+
+The F1 drop is a side effect of better timing. A leftover early "I" now leaves a
+gap before "want", and the line breaker splits there ("…feel I / want you to feel").
+
+Tried and rejected: forcing the CTC path to run to the end of Whisper's segment,
+instead of stopping where the transcript's score peaks. It made the base model
+worse (mean error 0.43 s) and undid half the large model's gain (0.32 s).
+
+The large model needs ~1 GB more VRAM than base. Alongside Whisper that overflowed
+8 GB, and alignment took 113 s instead of 6 s. So `karaoke_lrc.py` now
+transcribes every file, unloads Whisper (in-process, which does free the VRAM),
+then aligns. All 6 songs: 83 s. One-time download: 1.26 GB.
+
+### Repeated lines: bigger benchmark, Qwen3, two fixes (same evening)
+
+**Benchmark.** `test_songs/` now holds all 20 English JamendoLyrics songs with
+ground truth (download audio from `subsets/en/mp3/`; `mp3/` holds symlinks).
+The 3-song set had only one song with repeated choruses. 20-song means:
+
+| pipeline | mean onset error | median | within 0.3 s | >1 s off | line-break F1 |
+|---|---|---|---|---|---|
+| large aligner | 0.78 s | 0.07 s | 91% | 5% | 78% |
+| + line-start fix + dropped-repeat fill (current) | 0.73 s | 0.07 s | 91% | 4% | 79% |
+
+Mean error is dominated by a few songs (The Rinn 9 s, Rxbyn 0.9 s); the median
+and ">1 s off" are steadier. Not yet checked whether those outliers are real
+misalignments or `eval_lrc.py` pairing a word with the wrong repeat.
+
+**The leftover "early repeats" were one word.** In all four cases the only
+mistimed word was the "I" after a held "feel". The aligner put it inside the
+held vowel, 1.1–1.8 s early, and the next word was within 0.1 s. It wasn't
+repeat confusion.
+
+**Qwen3-ForcedAligner-0.6B: tried, rejected.** It's a new (2026) non-CTC aligner
+reporting ~3× better timing than WhisperX on speech. On these 20 songs it's
+sharper when right (median error lower on 14 of 20) but drifts badly on others
+(~40% of words >1 s off on 2 songs):
+
+| Qwen3 variant | within 0.3 s | >1 s off |
+|---|---|---|
+| per Whisper segment | 83% | 10% |
+| per segment, ±1 s padding | 83% | 11% |
+| on the original mix | 71% | 19% |
+| whole song at once | 56% | 38% |
+
+As a second opinion it's no better. Where it disagrees with wav2vec2 on a single
+word, wav2vec2 is closer to the truth 108 times vs Qwen's 50. Weights: 1.75 GB.
+
+**Fix 1: `retime_line_starts`.** A capitalised word that has ≤0.3 s of voice
+before a pause, while ≥0.1 s of voice after the pause belongs to no word, gets
+moved to where the voice returns. Pause = vocal stem 12 dB below the song's loud
+level for 0.25 s (Demucs bleed means breaths are dips, not silence). It moved 16
+words that have ground truth: 15 closer, 1 further. It caught all four Cortez
+"I"s, which also fixed the "…feel I / want you to feel" line splits (acoustic
+pop F1 78% → 83%). Without the capital-letter condition it was a coin flip
+(18 closer, 28 further): line-*ending* words are also short and followed by a
+breath.
+
+**Fix 2: `fill_unheard`, snip and retranscribe.** Whisper sometimes writes fewer
+repeats than are sung. Transcribing the same stretch on its own recovers them. In
+the acoustic-pop song's chorus 1, the full run got 2 of 4 "I want you to feel"
+and the snip got all 4. The pipeline looks for voice that comes back after a
+pause and runs ≥1.5 s before the next word, transcribes that stretch alone, and
+keeps the words only if ≥ half of them repeat a 4-word phrase from elsewhere in
+the song and they aren't mostly vocables. Unfiltered, only 26 of 80 added words
+were real lyrics (invented lines like "I'm a falcon!", plus "do do do" / "ah ah"
+fills the ground truth doesn't count). Filtered: 24 added, 24 real (acoustic pop
++10, Rxbyn +14). Costs one extra Whisper load, only when a song has such
+stretches (~17 s on the 23 test songs).
+
+Caveat for both fixes: the thresholds and filters were chosen by looking at
+these same 20 songs, and there's no held-out set yet. Both fixes only run on the
+vocal stem. They're skipped with `--no-separate`, where the band fills the pauses.
+
+## Known rough edges to expect
+
+- WhisperX drops timings for some tokens (numerals, odd glyphs); those words are
+  skipped rather than mistimed.
+- Pre-1925 recordings: heavy surface noise, often mono. Demucs was trained on
+  modern stereo mixes and will struggle. Try `--no-separate` and compare — on very
+  noisy sources the original mix sometimes transcribes better than a mangled stem.
+  *Tested:* on an unrestored 1909 78 (*Shine On, Harvest Moon*) Demucs still won
+  (177 vs 155 words), and `--no-separate` hallucinated a "You." in the silent intro.
+  Noise mostly costs Whisper's punctuation, not its words.
+- Repeated phrases: mostly handled now (large aligner, `retime_line_starts`,
+  `fill_unheard`), but still check choruses when hand-editing. The fixes need a
+  pause before the line and a phrase that repeats elsewhere in the song. A
+  legato line with no breath, or a dropped line sung only once, isn't caught.
+- Capitalised proper nouns can still start a line early ("since / April, January").
+- Whisper mishears sung lyrics more than speech. Budget for hand-editing the
+  `.lrc`. Since word `end` times are inferred, you can fix a word's text without
+  touching any timing.
+
+## Public domain, US, as of 2026
+
+- Compositions: published 1930 or earlier.
+- Sound recordings: 1925 or earlier (they follow a separate, stricter clock).
+- **Both** must clear — a modern recording of an old song is still protected.
+- Sources: Internet Archive Great 78 Project, Library of Congress National Jukebox.
+
+## Next steps
+
+1. ~~Set up a venv, install, confirm ffmpeg on PATH.~~ Done — see "First real run".
+2. ~~Run on 2–3 test songs.~~ Done on 23; `.lrc` files are in `test_songs/`.
+3. Import into OpenKara, confirm word highlighting tracks the instrumental.
+4. Tune the line-breaking constants against what actually reads well on screen.
+   (Scored version is in; check it on screen in OpenKara before tuning further.)
+5. Only then consider forking OpenKara to add a "generate lyrics" button that
+   shells out to this script.

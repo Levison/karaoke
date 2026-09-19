@@ -1,0 +1,30 @@
+[project]
+name = "karaoke"
+version = "0.1.0"
+description = "Audio -> word-timed enhanced .lrc sidecars for OpenKara"
+readme = "OPENKARA_NOTES.md"
+# whisperx needs 3.10-3.13
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "demucs>=4.1.0",
+    "whisperx>=3.8.6",
+    # whisperx pins these to ~=2.8.0 / ~=0.23.0. Listed directly so they can be
+    # sourced from the CUDA index below — PyPI's Windows wheels are CPU-only.
+    "torch~=2.8.0",
+    "torchaudio~=2.8.0",
+    "torchvision~=0.23.0",
+]
+
+[tool.uv]
+# CUDA machines only. (Intel macOS can't resolve anyway: demucs caps torch <2.3 there.)
+environments = ["sys_platform == 'win32'", "sys_platform == 'linux'"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

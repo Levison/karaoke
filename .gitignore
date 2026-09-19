@@ -1,0 +1,13 @@
+# uv-managed environment (recreate with `uv sync`)
+.venv/
+__pycache__/
+*.pyc
+
+# Test audio: ~107 MB of binaries. JamendoLyrics songs download from Hugging Face
+# (datasets/jamendolyrics/jamendolyrics, subsets/en/mp3/); see OPENKARA_NOTES.md for
+# the public-domain 78s. Ground truth and generated .lrc files are tracked.
+test_songs/*.mp3
+test_songs/*.ogg
+
+# OpenKara's library (database, imported media, stems) when it's pointed at test_songs/
+test_songs/OpenKara/
