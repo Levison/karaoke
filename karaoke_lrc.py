@@ -6,9 +6,10 @@ Pipeline:
     audio -> (optional) Demucs vocal isolation -> WhisperX word timestamps
           -> enhanced LRC with <mm:ss.xx> per-word tags
 
-The .lrc is written next to the source audio with the same stem, which is what
-OpenKara's sidecar loader looks for. Sidecars are consulted BEFORE any online
-lyrics source, so a generated file always wins over LRCLIB.
+The .lrc is written next to the source audio with the same stem. Import both into
+OpenKara together: it copies the audio to media/<sha256>.<ext>, so it matches the
+.lrc by its [ti:]/[ar:] tags, which are taken from the audio's own tags. An
+imported .lrc is cached as manual lyrics, which win over LRCLIB.
 
 Usage:
     uv run karaoke_lrc.py song.mp3
@@ -170,7 +171,7 @@ def build_lrc(
     out: list[str] = []
     if title:
         out.append(f"[ti:{title}]")
-    if artist:
+    if artist is not None:  # an empty [ar:] still matches an untagged song in OpenKara
         out.append(f"[ar:{artist}]")
     out.append("[by:karaoke_lrc.py]")
     out.append("")
@@ -479,10 +480,15 @@ def write_lrc(audio: Path, words: list[Word], args: argparse.Namespace) -> bool:
         print("    no words transcribed — is this an instrumental?")
         return False
 
+    from fix_lrc_tags import read_tags
+
     lines = group_into_lines(words)
+    title, artist = read_tags(audio)
     out_path = audio.with_suffix(".lrc")
-    out_path.write_text(build_lrc(lines, title=audio.stem, plain=args.plain), encoding="utf-8")
+    out_path.write_text(build_lrc(lines, title=title, artist=artist, plain=args.plain), encoding="utf-8")
     print(f"    wrote {out_path.name} — {len(lines)} lines, {len(words)} words")
+    if "]" in title or "]" in artist:
+        print("    ']' in the title/artist: OpenKara can't auto-match this one, use Edit lyrics there")
     return True
 
 

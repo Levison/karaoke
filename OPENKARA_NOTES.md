@@ -11,20 +11,40 @@ OpenKara's lyrics acquisition chain is:
 cache → embedded tags → TTML/LYS/LRC sidecar → AMLL → LRCLIB → LrcApi
 ```
 
-Local sidecars are consulted **before** any network source. A generated sidecar
-always wins over LRCLIB, so public-domain songs that LRCLIB has never heard of
-work fine. No code change to OpenKara required.
+Cached lyrics come first, and an imported `.lrc` is cached, so it always wins
+over LRCLIB. Public-domain songs that LRCLIB has never heard of work fine. No
+code change to OpenKara required.
 
-## Sidecar rules (`fetch.rs::read_sidecar_lyrics`)
+## Getting a `.lrc` into OpenKara (checked against build 74240930, 2026-09-19)
 
-- Must sit in the **same directory** as the audio file with the **same file stem**.
-  `Danny Boy.mp3` → `Danny Boy.lrc`
-- Extensions are case-insensitive. Priority: `.ttml` > `.lys` > `.lrc`
-- A sidecar that fails to parse is silently skipped and the chain continues —
-  so a malformed file degrades to "no lyrics", it doesn't error.
-- `.lrc` is in the importable-extensions list (`import/expand.rs`), and import
-  treats `lrc` and `cdg` as sidecar companions. Put the `.lrc` next to the audio
-  **before** importing into OpenKara.
+The sidecar step in the chain does **not** see our files. Import copies the audio
+to `<library>/media/<sha256>.<ext>` (`import/ingest.rs`), and
+`fetch.rs::read_sidecar_lyrics` looks for `<sha256>.lrc` in that folder.
+
+What works instead is importing the `.lrc` in the same import as the audio. The
+frontend (`runtime/import-workflow.ts`) imports the audio first, then passes the
+`.lrc` files to `import_lyrics_files` (`commands/lyrics.rs`), which caches each
+one as `Manual` lyrics for the song it matches:
+- File-stem match: never hits, because the song's stem is its hash.
+- Fallback: the `.lrc`'s `[ar:]` and `[ti:]` must both equal the song's artist
+  and title (case-insensitive). The title falls back to the audio file name when
+  there's no title tag. An empty `[ar:]` matches a song with no artist tag, but a
+  missing `[ar:]` matches nothing.
+- `karaoke_lrc.py` writes both tags from the audio's own tags (mutagen,
+  `fix_lrc_tags.read_tags`). Use `uv run fix_lrc_tags.py` on older `.lrc` files.
+  On 2026-09-18 a re-run of the old generator silently undid the tags.
+- Brackets in the title or artist (e.g. *Vision [Radio Edit]*) match only on our
+  local fix to `lyrics/parser.rs`; upstream stops at the first `]` and misses
+  them. On a build without the fix, use Edit lyrics in OpenKara for those.
+- An unmatched `.lrc` shows an error toast.
+
+Sidecar rules, for reference: same folder and stem as the (library) audio file,
+case-insensitive extension, `.ttml` > `.lys` > `.lrc`, and an unparseable file
+is silently skipped.
+
+Keep the library folder outside the song folders. Folder import scans 3 levels
+deep, so re-importing a folder that contains the library also picks up its
+`media/` copies.
 
 ## Enhanced LRC is supported → word-by-word highlighting for free
 

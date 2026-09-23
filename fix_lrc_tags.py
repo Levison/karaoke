@@ -9,8 +9,8 @@ fix_lrc_tags.py — make .lrc sidecars attach to their songs when imported into 
 OpenKara copies imported audio into its library as media/<sha256>.<ext>, so it can't
 match a .lrc by file name. It falls back to the .lrc's [ar:] and [ti:] tags, which must
 both equal (ignoring case) the artist and title tags of the audio file
-(src-tauri/src/commands/lyrics.rs, import_lyrics_files). karaoke_lrc.py writes
-[ti:<file name>] and no [ar:], so nothing matches.
+(src-tauri/src/commands/lyrics.rs, import_lyrics_files). karaoke_lrc.py now writes
+these itself via read_tags() below; this script fixes older or hand-made .lrc files.
 
 This rewrites just those two header lines from the neighbouring audio file's tags,
 the way OpenKara reads them: title falls back to the file name, a missing artist
