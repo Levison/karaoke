@@ -13,5 +13,9 @@ test_songs/*.ogg
 # test songs are CC "no derivatives", and these are derived from them.
 test_songs/*.lrc
 
+# MUSDB18 ground truth: lyrics of songs licensed for academic use only, so not
+# published here. Regenerate with `uv run musdb_truth.py`.
+test_songs/groundtruth/* - *
+
 # OpenKara's library (database, imported media, stems) when it's pointed at test_songs/
 test_songs/OpenKara/
