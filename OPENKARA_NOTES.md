@@ -239,7 +239,7 @@ vocal stem. They're skipped with `--no-separate`, where the band fills the pause
 ## Next steps
 
 1. ~~Set up a venv, install, confirm ffmpeg on PATH.~~ Done — see "First real run".
-2. ~~Run on 2–3 test songs.~~ Done on 23; `.lrc` files are in `test_songs/`.
+2. ~~Run on 2–3 test songs.~~ Done on 23. The `.lrc` files are generated into `test_songs/` but not committed.
 3. Import into OpenKara, confirm word highlighting tracks the instrumental.
 4. Tune the line-breaking constants against what actually reads well on screen.
    (Scored version is in; check it on screen in OpenKara before tuning further.)
