@@ -33,9 +33,11 @@ one as `Manual` lyrics for the song it matches:
 - `karaoke_lrc.py` writes both tags from the audio's own tags (mutagen,
   `fix_lrc_tags.read_tags`). Use `uv run fix_lrc_tags.py` on older `.lrc` files.
   On 2026-09-18 a re-run of the old generator silently undid the tags.
-- Brackets in the title or artist (e.g. *Vision [Radio Edit]*) match only on our
-  local fix to `lyrics/parser.rs`; upstream stops at the first `]` and misses
-  them. On a build without the fix, use Edit lyrics in OpenKara for those.
+- Brackets in the title or artist (e.g. *Vision [Radio Edit]*) truncate at the
+  first `]` upstream, so those files match nothing. Fixed in our checkout on
+  branch `fix/lyrics-bracketed-metadata-tags` (upstream issue #465, PR #466);
+  verified 2026-09-22, all 23 files matched. On a build without the fix, use
+  Edit lyrics in OpenKara for those.
 - An unmatched `.lrc` shows an error toast.
 
 Sidecar rules, for reference: same folder and stem as the (library) audio file,
