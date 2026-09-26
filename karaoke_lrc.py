@@ -6,6 +6,11 @@ Pipeline:
     audio -> (optional) Demucs vocal isolation -> WhisperX word timestamps
           -> enhanced LRC with <mm:ss.xx> per-word tags
 
+When the song's lyrics are known (<stem>.lyrics.txt next to the audio, or found on
+LRCLIB and saved there), Whisper's words only locate each lyric line and the real
+lyrics are timed instead; see known_lyrics.py. Edit <stem>.lyrics.txt and rerun
+with --force to fix a wrong word.
+
 The .lrc is written next to the source audio with the same stem. Import both into
 OpenKara together: it copies the audio to media/<sha256>.<ext>, so it matches the
 .lrc by its [ti:]/[ar:] tags, which are taken from the audio's own tags. An
@@ -19,6 +24,9 @@ Usage:
     uv run karaoke_lrc.py song.mp3 --keep-stems out/  # save vocals/accompaniment
     uv run karaoke_lrc.py canción.mp3 --language es   # non-English (default: en)
     uv run karaoke_lrc.py song.mp3 --align-model WAV2VEC2_ASR_BASE_960H  # smaller aligner
+    uv run karaoke_lrc.py *.mp3 --lyrics-dir lyrics/  # known lyrics as lyrics/<stem>.txt
+    uv run karaoke_lrc.py song.mp3 --no-lrclib        # only local lyrics files
+    uv run karaoke_lrc.py song.mp3 --no-lyrics        # Whisper's words only
 
 Install (on the GPU machine):
     uv sync
@@ -39,6 +47,8 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
+from known_lyrics import find_lyrics, place_lines
 
 # Line breaking. Every gap between two words gets a break score from the cues
 # below, then the whole song is laid out at once to maximise the total score
@@ -288,14 +298,16 @@ class Transcriber:
         gc.collect()
         torch.cuda.empty_cache()
 
-    def align(self, result: dict, audio_data) -> list[Word]:
-        """Force-align a transcript against its samples, returning word-level timings."""
-        lang = result.get("language", self.language or "en")
+    def aligner(self, lang: str) -> tuple:
         if lang not in self.align_models:
             self.align_models[lang] = self.whisperx.load_align_model(
                 language_code=lang, device=self.device, model_name=self.align_model or ALIGN_MODELS.get(lang),
             )
-        align_model, metadata = self.align_models[lang]
+        return self.align_models[lang]
+
+    def align(self, result: dict, audio_data) -> list[Word]:
+        """Force-align a transcript against its samples, returning word-level timings."""
+        align_model, metadata = self.aligner(result.get("language", self.language or "en"))
         aligned = self.whisperx.align(
             result["segments"], align_model, metadata, audio_data, self.device,
             return_char_alignments=False,
@@ -312,6 +324,21 @@ class Transcriber:
                 words.append(Word(text=text, start=float(start), end=float(end), segment=seg_index))
         return words
 
+    def align_line(self, text: str, start: float, end: float, audio_data) -> list[tuple[float, float] | None]:
+        """Time each whitespace-separated word of text within [start, end] seconds;
+        None for words the aligner couldn't place."""
+        align_model, metadata = self.aligner(self.language or "en")
+        segment = {"text": text, "start": start, "end": min(end, len(audio_data) / 16000)}
+        aligned = self.whisperx.align([segment], align_model, metadata, audio_data, self.device,
+                                      return_char_alignments=False)
+        # WhisperX may split a line at sentence ends, and returns no words for a line
+        # it fails to align; words keep their order either way.
+        found = [w for seg in aligned.get("segments", []) for w in seg.get("words", [])]
+        if len(found) != len(text.split()):
+            return [None] * len(text.split())
+        return [(float(w["start"]), float(w["end"])) if w.get("start") is not None and w.get("end") is not None
+                else None for w in found]
+
 
 def vocal_loudness(samples) -> "np.ndarray":
     """Level per 10 ms frame (20 ms window) of 16 kHz samples, in dB relative to the
@@ -324,7 +351,7 @@ def vocal_loudness(samples) -> "np.ndarray":
     return db - np.percentile(db, 95)
 
 
-def retime_line_starts(words: list[Word], vocals) -> int:
+def retime_line_starts(words: list[Word], vocals, line_starts: set[int] | None = None) -> int:
     """Move line-starting words the aligner dragged into the previous held note.
 
     The aligner sometimes starts a line's first word inside the previous word's
@@ -332,14 +359,16 @@ def retime_line_starts(words: list[Word], vocals) -> int:
     vocal stem, such a word has almost no voice of its own before a pause, and after
     the pause there's voice that no word claims. Only capitalised words (Whisper's
     line starts) are moved: a line's last word is often short and followed by a
-    breath too, and moving those was wrong more often than right.
+    breath too, and moving those was wrong more often than right. With known lyrics,
+    line_starts gives the indices of each lyric line's first word instead.
     Returns the number of words moved.
     """
     loud = vocal_loudness(vocals) > -PAUSE_DB
     moved = 0
-    for word, nxt in zip(words, words[1:]):
+    for i, (word, nxt) in enumerate(zip(words, words[1:])):
         a, b = int(word.start * 100), int(nxt.start * 100)
-        if not word.text[:1].isupper() or b - a < 3 or b > len(loud):
+        starts_line = i in line_starts if line_starts is not None else word.text[:1].isupper()
+        if not starts_line or b - a < 3 or b > len(loud):
             continue
         span = loud[a:b]
         runs = pauses(span)
@@ -475,14 +504,72 @@ def fill_unheard(aligned: list[tuple], transcriber: Transcriber) -> None:
         retime_line_starts(words, samples)  # new words can land in the previous note too
 
 
-def write_lrc(audio: Path, words: list[Word], args: argparse.Namespace) -> bool:
+def spread(times: list[tuple[float, float] | None], lo: float, hi: float) -> list[tuple[float, float]]:
+    """Fill in untimed words: each run shares the time between its timed
+    neighbours (or lo/hi at the ends) evenly."""
+    out = list(times)
+    k = 0
+    while k < len(out):
+        if out[k] is not None:
+            k += 1
+            continue
+        j = k
+        while j < len(out) and out[j] is None:
+            j += 1
+        a = out[k - 1][1] if k else lo
+        b = out[j][0] if j < len(out) else max(hi, a)
+        step = max(b - a, 0.0) / (j - k)
+        for n in range(k, j):
+            out[n] = (a + step * (n - k), a + step * (n - k + 1))
+        k = j
+    return out
+
+
+def time_lyrics(placements, transcriber: Transcriber, samples) -> list[list[Word]]:
+    """Align each placed lyric line (see known_lyrics.place_lines) in its stretch of
+    the song. Returns the lines as timed words."""
+    # Consecutive placements in the same group are aligned as one text.
+    batches: list[list[int]] = []
+    for li, p in enumerate(placements):
+        if batches and p.group is not None and placements[batches[-1][0]].group == p.group:
+            batches[-1].append(li)
+        else:
+            batches.append([li])
+
+    lines, last_start = [], 0.0
+    for batch in batches:
+        p = placements[batch[0]]
+        words = [w for li in batch for w in placements[li].words]
+        text = " ".join(words)
+        try:
+            times = transcriber.align_line(text, p.start, p.end, samples)
+        except Exception as exc:  # noqa: BLE001 — one line shouldn't sink the song
+            print(f"    couldn't align \"{text}\": {exc}", file=sys.stderr)
+            times = [None] * len(words)
+        lo, hi = (p.first, p.last) if p.anchors and all(t is None for t in times) else (p.start, p.end)
+        timed = iter(spread(times, lo, hi))
+        for li in batch:
+            line = []
+            for w in placements[li].words:
+                start, end = next(timed)
+                start = max(start, last_start)  # keep the song's words in order
+                line.append(Word(text=w, start=start, end=max(end, start), segment=li))
+                last_start = start
+            lines.append(line)
+    return lines
+
+
+def write_lrc(audio: Path, words: list[Word], args: argparse.Namespace,
+              lines: list[list[Word]] | None = None) -> bool:
+    """Write the .lrc; lines are the lyric lines when the lyrics are known,
+    otherwise words are laid out by group_into_lines."""
     if not words:
         print("    no words transcribed — is this an instrumental?")
         return False
 
     from fix_lrc_tags import read_tags
 
-    lines = group_into_lines(words)
+    lines = lines or group_into_lines(words)
     title, artist = read_tags(audio)
     out_path = audio.with_suffix(".lrc")
     out_path.write_text(build_lrc(lines, title=title, artist=artist, plain=args.plain), encoding="utf-8")
@@ -490,6 +577,22 @@ def write_lrc(audio: Path, words: list[Word], args: argparse.Namespace) -> bool:
     if "]" in title or "]" in artist:
         print("    ']' in the title/artist: OpenKara can't auto-match this one, use Edit lyrics there")
     return True
+
+
+def lookup_lyrics(audio: Path, duration: float, args: argparse.Namespace) -> list[str] | None:
+    """Known lyric lines for audio (see known_lyrics.find_lyrics), or None."""
+    if args.no_lyrics:
+        return None
+    from fix_lrc_tags import read_tags
+
+    title, artist = read_tags(audio)
+    found = find_lyrics(audio, artist, title, duration, args.lyrics_dir, not args.no_lrclib)
+    if not found or not found[0]:
+        print("    no known lyrics, using Whisper's words")
+        return None
+    lines, source = found
+    print(f"    lyrics: {len(lines)} lines from {source}")
+    return lines
 
 
 def resolve_device(requested: str) -> str:
@@ -527,6 +630,14 @@ def main() -> int:
     parser.add_argument("--plain", action="store_true", help="line-level LRC instead of word-timed")
     parser.add_argument("--keep-stems", metavar="DIR", help="save separated stems to DIR")
     parser.add_argument("--force", action="store_true", help="overwrite existing .lrc")
+    parser.add_argument(
+        "--lyrics-dir", metavar="DIR", type=Path,
+        help="read known lyrics from DIR/<stem>.txt or DIR/<stem>.lyrics.txt "
+             "(default: <stem>.lyrics.txt next to the audio)",
+    )
+    parser.add_argument("--no-lrclib", action="store_true", help="don't look lyrics up on LRCLIB")
+    parser.add_argument("--no-lyrics", action="store_true",
+                        help="ignore known lyrics and use Whisper's words (the old behaviour)")
     args = parser.parse_args()
 
     args.device = resolve_device(args.device)
@@ -559,9 +670,11 @@ def main() -> int:
         for i, audio in enumerate(todo, 1):
             print(f"  [{i}/{len(todo)}] {audio.name}")
             try:
-                jobs.append((audio, *prepare(audio, args, Path(tmp) / str(i))))
+                samples, is_vocals = prepare(audio, args, Path(tmp) / str(i))
             except Exception as exc:  # noqa: BLE001 — one bad file shouldn't kill the batch
                 print(f"    failed: {exc}", file=sys.stderr)
+                continue
+            jobs.append((audio, samples, is_vocals, lookup_lyrics(audio, len(samples) / 16000, args)))
 
     written = 0
     if jobs:
@@ -572,10 +685,10 @@ def main() -> int:
             print(f"  failed to load WhisperX: {exc}", file=sys.stderr)
             return 1
         transcripts = []
-        for i, (audio, samples, is_vocals) in enumerate(jobs, 1):
+        for i, (audio, samples, is_vocals, lyrics) in enumerate(jobs, 1):
             print(f"  [{i}/{len(jobs)}] {audio.name}")
             try:
-                transcripts.append((audio, samples, is_vocals, transcriber.transcribe(samples)))
+                transcripts.append((audio, samples, is_vocals, lyrics, transcriber.transcribe(samples)))
             except Exception as exc:  # noqa: BLE001
                 print(f"    failed: {exc}", file=sys.stderr)
 
@@ -585,20 +698,38 @@ def main() -> int:
         )
         print(f"\nAligning words ({aligner})")
         aligned = []
-        for i, (audio, samples, is_vocals, result) in enumerate(transcripts, 1):
+        for i, (audio, samples, is_vocals, lyrics, result) in enumerate(transcripts, 1):
             print(f"  [{i}/{len(transcripts)}] {audio.name}")
             try:
                 words = transcriber.align(result, samples)
+                lines = None
+                if lyrics:
+                    placements = place_lines(lyrics, [(w.text, w.start, w.end) for w in words])
+                    if placements is None:
+                        print("    the lyrics barely match what's sung (another song?), using Whisper's words")
+                    else:
+                        lines = time_lyrics(placements, transcriber, samples)
+                        words = [w for line in lines for w in line]
+                        extra = len(placements) - len(lyrics)
+                        print(f"    timed the lyrics: {len(lines)} lines"
+                              + (f", {extra} sung more often than written" if extra else ""))
                 if is_vocals:  # in a full mix the band plays through the singer's pauses
-                    if moved := retime_line_starts(words, samples):
+                    starts = None
+                    if lines:
+                        starts, k = set(), 0
+                        for line in lines:
+                            starts.add(k)
+                            k += len(line)
+                    if moved := retime_line_starts(words, samples, starts):
                         print(f"    moved {moved} line start(s) out of the previous note")
-                aligned.append((audio, samples, is_vocals, words))
+                aligned.append((audio, samples, is_vocals, words, lines))
             except Exception as exc:  # noqa: BLE001
                 print(f"    failed: {exc}", file=sys.stderr)
 
-        fill_unheard(aligned, transcriber)
-        for audio, _, _, words in aligned:
-            if write_lrc(audio, words, args):
+        # Known lyrics already hold every repeat; re-transcribing only helps Whisper's words.
+        fill_unheard([job[:4] for job in aligned if job[4] is None], transcriber)
+        for audio, _, _, words, lines in aligned:
+            if write_lrc(audio, words, args, lines):
                 written += 1
 
     print(f"\ndone — {written}/{len(files)} file(s) written")

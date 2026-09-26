@@ -272,6 +272,50 @@ extract each mix as `test_songs/<name>.m4a` (the command is in the script's
 docstring). The `.stem.mp4` also carries the clean vocals (stream 4), which
 would show how much Demucs costs.
 
+### Known lyrics (2026-09-26)
+
+On the six metal songs, every lyric line the pipeline missed still had about
+the right number of words in about the right place. Whisper was mishearing
+lines, not missing them. So when the lyrics are known, Whisper's timed words
+now only locate each lyric line, and the aligner times the real lyric words
+(`known_lyrics.py`). Each lyric line becomes an LRC line.
+
+Where lyrics come from, in order: `<stem>.lyrics.txt` next to the audio (or
+`--lyrics-dir`), then LRCLIB by artist/title tags and duration (±3 s; a title
+suffix like "(2017 Version)" is dropped if the full title finds nothing). An
+LRCLIB hit is saved as `<stem>.lyrics.txt`, so a wrong word can be fixed there
+and the song rerun with `--force`. Sidecars are git-ignored. `--no-lrclib`
+disables the lookup; `--no-lyrics` restores the old behaviour.
+
+20 JamendoLyrics songs, with their reference lyrics as the known lyrics (best
+case), against Whisper's words:
+
+| | Whisper's words | known lyrics |
+|---|---|---|
+| word recall | 81% | 100% |
+| line-break F1 | 79% | 100% |
+| onset error, words both runs have (mean / median) | 0.48 / 0.06 s | 0.49 / 0.06 s |
+| >1 s off, all words | 3.7% | 7.9% |
+
+Text and lines become exact, and words Whisper heard keep the same timing. The
+new words, the 19% Whisper never heard, are the weak spot. For lines with no
+word matching Whisper's, about half the words are over 1 s off, because
+there's nothing to pin them to. Tried and rejected, none better: aligning the
+whole gap as one text (kept, as it's simplest), dropping one-word "anchors",
+matching lines to the vocal stem's phrases by length, and re-transcribing the
+gap with the missing lines as Whisper's prompt (Whisper then invents them where
+they aren't sung).
+
+Real LRCLIB lyrics, one song: *The Rinn – Voices* (metal, the 9 s outlier) went
+from 57% recall and 9.04 s mean error to 96% and 0.11 s, 95% of words within
+0.3 s. The reference lyrics scored far worse on the same song (9.10 s); not yet
+checked why.
+
+Unwritten repeats (a chorus the lyrics write once) are found by matching
+Whisper's leftover words against lyric lines. With reference lyrics, which
+write every repeat, it still added 1–31 lines per song. Turning it off made
+timing slightly worse, so it's kept, but it's a false-positive source.
+
 ## Known rough edges to expect
 
 - WhisperX drops timings for some tokens (numerals, odd glyphs); those words are
