@@ -21,7 +21,8 @@ Metrics:
     median     median onset error
     <0.3s      share of matched words whose onset is within 0.3 s
     brk P/R/F1 line breaks: precision (LRC breaks that are real lyric-line
-               ends), recall (lyric-line ends the LRC also breaks at), and F1
+               ends), recall (lyric-line ends the LRC also breaks at), and F1;
+               "-" when the ground truth has no line ends
     1-word     LRC lines holding a single word (usually a bad break)
 """
 
@@ -86,6 +87,7 @@ def score(lrc: Path) -> dict | None:
             fn += ref_brk and not hyp_brk
 
     n = len(errors)
+    has_lines = any(brk for *_, brk in truth)  # False when the ground truth has no line times
     p = tp / (tp + fp) if tp + fp else 0.0
     r = tp / (tp + fn) if tp + fn else 0.0
     return {
@@ -94,9 +96,9 @@ def score(lrc: Path) -> dict | None:
         "aae": statistics.fmean(errors) if n else float("nan"),
         "median": statistics.median(errors) if n else float("nan"),
         "within_0.3": sum(e <= 0.3 for e in errors) / n if n else 0.0,
-        "brk_p": p,
-        "brk_r": r,
-        "brk_f1": 2 * p * r / (p + r) if p + r else 0.0,
+        "brk_p": p if has_lines else None,
+        "brk_r": r if has_lines else None,
+        "brk_f1": (2 * p * r / (p + r) if p + r else 0.0) if has_lines else None,
         "one_word": one_word_lines,
     }
 
@@ -118,10 +120,11 @@ def main() -> int:
               f" {'brk P':>6} {'brk R':>6} {'brk F1':>6} {'1-word':>6}")
     print(header)
     print("-" * len(header))
+    pct = lambda v: f"{'-':>6}" if v is None else f"{v:>6.0%}"
     for r in rows:
         print(
             f"{r['song'][:30]:<30} {r['recall']:>6.0%} {r['aae']:>5.2f}s {r['median']:>5.2f}s {r['within_0.3']:>6.0%}"
-            f" {r['brk_p']:>6.0%} {r['brk_r']:>6.0%} {r['brk_f1']:>6.0%} {r['one_word']:>6}"
+            f" {pct(r['brk_p'])} {pct(r['brk_r'])} {pct(r['brk_f1'])} {r['one_word']:>6}"
         )
     return 0
 

@@ -210,6 +210,68 @@ Caveat for both fixes: the thresholds and filters were chosen by looking at
 these same 20 songs, and there's no held-out set yet. Both fixes only run on the
 vocal stem. They're skipped with `--no-separate`, where the band fills the pauses.
 
+### Heavy metal set (2026-09-25)
+
+JamendoLyrics has only one metal song in English (The Rinn, *Voices*, the 9 s
+outlier), so six more English metal tracks from Jamendo were added to
+`test_songs/`. They have no word timings, so `eval_lrc.py` skips them. Judge
+them by eye against the lyrics on each track's Jamendo `/lyrics` page. Download
+with `curl -L -o <name>.mp3 https://prod-1.storage.jamendo.com/download/track/<id>/mp32/`.
+
+| file stem | Jamendo id | style |
+|---|---|---|
+| `Avenger_Kills_-_Metal_child` | 1794820 | 80s heavy/power metal, male vocals |
+| `Avenger_Kills_-_Rotten_legion` | 1794821 | 〃 |
+| `Avenger_Kills_-_The_trap` | 1794825 | 〃 |
+| `Avenger_Kills_-_Feeling_my_pain` | 1794822 | 〃 |
+| `The_Rinn_-_Into_The_Dark` | 1530457 | symphonic power metal, female vocals, same album as *Voices* |
+| `The_Rinn_-_Mirror__2017_Version_` | 1530452 | 〃 |
+
+Lyrics page: `https://www.jamendo.com/track/<id>/x/lyrics`. Avenger Kills'
+lyrics read as written by non-native speakers, so expect odd grammar there that
+isn't Whisper's fault.
+
+First run (current pipeline, all defaults). No timing truth, so these are text
+coverage against the posted lyrics only. "Lines heard" = lyric lines with ≥60%
+of their words found in order in the .lrc. "In lyrics" = .lrc words that occur
+anywhere in the posted lyrics, a rough inverse of mishearings and invented words.
+
+| song | lines heard | words heard | .lrc words in lyrics |
+|---|---|---|---|
+| Avenger Kills – Feeling my pain | 15/18 | 89% | 88% |
+| Avenger Kills – Metal child | 18/20 | 88% | 89% |
+| Avenger Kills – Rotten legion | 19/20 | 84% | 84% |
+| Avenger Kills – The trap | 19/20 | 90% | 92% |
+| The Rinn – Into The Dark | 23/28 | 83% | 82% |
+| The Rinn – Mirror | 31/31 | 95% | 94% |
+
+That's in line with the first JamendoLyrics benchmark (word recall 88% hip-hop,
+93% acoustic pop, 45% rock with a non-native singer), though that recall comes
+from `eval_lrc.py`, a different measure. Whisper writing a ~400-letter "Yoooo…" for a held scream in
+*The trap* was the only oddity: the aligner rejected it and no garbage reached
+the .lrc.
+
+**Metal with real word timings: MUSDB18.** Four MUSDB18 test songs are tagged
+Heavy Metal, and they have hand-set word onsets
+([Zenodo 15547046](https://zenodo.org/records/15547046)).
+`uv run musdb_truth.py` writes their ground truth into `test_songs/groundtruth/`
+under the MUSDB name (e.g. `Timboz - Pony.words.csv`). These files are
+git-ignored, since MUSDB18's songs are academic-use only. Line breaks come from
+MUSDB-ALT's line times. Timboz – Pony has none (screamed vocals), so its break
+columns show "-".
+
+| song | words | lines |
+|---|---|---|
+| Hollow Ground – Ill Fate | 145 | 30 |
+| James Elder & Mark M Thompson – The English Actor | 213 | 41 |
+| Timboz – Pony | 141 | – |
+| We Fell From The Sky – Not You | 258 | 43 |
+
+The audio isn't included. Request MUSDB18 on Zenodo (academic use only), then
+extract each mix as `test_songs/<name>.m4a` (the command is in the script's
+docstring). The `.stem.mp4` also carries the clean vocals (stream 4), which
+would show how much Demucs costs.
+
 ## Known rough edges to expect
 
 - WhisperX drops timings for some tokens (numerals, odd glyphs); those words are
