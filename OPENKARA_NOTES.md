@@ -322,34 +322,59 @@ title search finds their tracks. One lookup missed a track and found it on
 retry with no error reported, so a miss isn't proof the lyrics aren't there.
 All six metal songs got their lyrics from Jamendo; LRCLIB had none of them.
 
-20 JamendoLyrics songs, with their reference lyrics as the known lyrics (best
-case), against Whisper's words:
+### UX benchmark (2026-09-27)
 
-| | Whisper's words | known lyrics |
+The pairing-based metrics (AAE, recall, break F1, now `eval_lrc.py --classic`)
+misled on known lyrics. They pair .lrc words with reference words by text, so
+one chorus more or less in the .lrc scores whole choruses against the wrong
+copy: Songwriterz with Jamendo lyrics showed 6.9 s mean error while 98% of its
+lines were on time. The earlier conclusion that known lyrics made timing worse
+(words >1 s off 3.7% → 7.9%) was this artifact.
+
+`eval_lrc.py` now reports what a singer sees, without pairing: for each word
+when it's sung, is that word highlighted then? "On time" uses 0.3 s early to
+0.2 s late, from a karaoke listening study (Lizé Masclef, Vaglio & Moussallam,
+"User-centered evaluation of lyrics-to-audio alignment", ISMIR 2021: listeners
+notice late lyrics sooner than early ones). "Bad lines" are sung lines with
+under half their words within 1 s, the reliability number to watch. "Stray"
+counts .lrc words nobody sings within 1 s. Definitions are in the docstring.
+
+20 JamendoLyrics songs:
+
+| | Whisper's words | reference lyrics (best case) |
 |---|---|---|
-| word recall | 81% | 100% |
-| line-break F1 | 79% | 100% |
-| onset error, words both runs have (mean / median) | 0.48 / 0.06 s | 0.49 / 0.06 s |
-| >1 s off, all words | 3.7% | 7.9% |
+| on time | 75% | 85% |
+| within 1 s | 81% | 95% |
+| bad lines | 103 / 868 | 33 / 868 |
+| stray words | 17% | 7% |
+| songs with no bad lines | 6 / 20 | 9 / 20 |
 
-Text and lines become exact, and words Whisper heard keep the same timing. The
-new words, the 19% Whisper never heard, are the weak spot. For lines with no
-word matching Whisper's, about half the words are over 1 s off, because
-there's nothing to pin them to. Tried and rejected, none better: aligning the
-whole gap as one text (kept, as it's simplest), dropping one-word "anchors",
-matching lines to the vocal stem's phrases by length, and re-transcribing the
-gap with the missing lines as Whisper's prompt (Whisper then invents them where
-they aren't sung).
+The 14 of them Jamendo has lyrics for, with Jamendo's lyrics:
 
-Real LRCLIB lyrics, one song: *The Rinn – Voices* (metal, the 9 s outlier) went
-from 57% recall and 9.04 s mean error to 96% and 0.11 s, 95% of words within
-0.3 s. The reference lyrics scored far worse on the same song (9.10 s); not yet
-checked why.
+| | Whisper's words | Jamendo lyrics | reference lyrics |
+|---|---|---|---|
+| on time | 73% | 77% | 84% |
+| within 1 s | 79% | 86% | 94% |
+| bad lines | 90 / 602 | 64 / 602 | 28 / 602 |
+| stray words | 18% | 15% | 9% |
+
+Jamendo's lyrics cut bad lines on most songs (Avercage 24 → 9, Ridgway 12 → 3,
+Moon I Mean 8 → 1, Songwriterz 6 → 0) but wreck one: JASON MILLER, 2 → 26,
+where Jamendo's text leaves out a quarter of what's rapped and the missing
+sections get pinned to the wrong place. Lower Loveday went 0 → 2. Fix to try:
+where Whisper hears a long run the lyrics don't contain, keep Whisper's words.
+
+Lines Whisper heard nothing of are the weak spot of known lyrics: there's
+nothing to pin them to. Tried and rejected, judged with the old metrics, none
+better: aligning the whole gap as one text (kept, as it's simplest), dropping
+one-word "anchors", matching lines to the vocal stem's phrases by length, and
+re-transcribing the gap with the missing lines as Whisper's prompt (Whisper
+then invents them where they aren't sung). Worth re-checking with the new
+benchmark.
 
 Unwritten repeats (a chorus the lyrics write once) are found by matching
 Whisper's leftover words against lyric lines. With reference lyrics, which
-write every repeat, it still added 1–31 lines per song. Turning it off made
-timing slightly worse, so it's kept, but it's a false-positive source.
+write every repeat, it still added 1–31 lines per song, a false-positive source.
 
 ## Known rough edges to expect
 

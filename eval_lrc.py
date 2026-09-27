@@ -2,19 +2,35 @@
 """
 eval_lrc.py — score a generated enhanced .lrc against JamendoLyrics ground truth.
 
-Whisper's words won't match the reference exactly (mishearings, dropped or
-extra words), so the two word sequences are aligned first and both timing and
-line breaks are measured only on the words that match.
-
-    uv run eval_lrc.py test_songs/Cortez_-_Feel__Stripped_.lrc
     uv run eval_lrc.py test_songs/*.lrc          # skips files with no ground truth
+    uv run eval_lrc.py --classic test_songs/*.lrc
 
 Ground truth is looked up as groundtruth/<stem>.words.txt + .words.csv next to
 the .lrc (the layout JamendoLyrics uses: one word per whitespace token, one CSV
 row per word with word_start/word_end in seconds, and line_end set on the last
 word of each lyric line).
 
-Metrics:
+The default report scores what a singer sees. It never pairs .lrc words with
+reference words one to one: it asks, for each word when it's sung, whether the
+screen highlights that word then. Pairing is what the classic metrics do, and
+it misleads here: when the .lrc has one chorus more or less than the song, the
+pairing matches whole choruses to the wrong copy and reports seconds of error
+for lines that are on time (Songwriterz: 6.9 s mean error, 98% of lines on time).
+
+    on-time    sung words the .lrc highlights (same word) from 0.3 s early to
+               0.2 s late. Users notice late lyrics sooner than early ones:
+               Lizé Masclef, Vaglio & Moussallam, "User-centered evaluation of
+               lyrics-to-audio alignment", ISMIR 2021, put the points where half
+               of listeners notice at about -0.3 s and +0.2 s.
+    <=1s       sung words highlighted within 1 s either way: readable, if off
+    bad lines  sung lines with under half their words within 1 s: visibly
+               broken lines, the thing to minimise
+    stray      .lrc words no one sings (same word) within 1 s of that time:
+               invented words, mishearings, lines placed in the wrong spot
+    starts P/R line starts: .lrc lines starting within 0.5 s of a sung line's
+               start, and sung lines with an .lrc line starting that close
+
+--classic prints the older, pairing-based metrics:
     recall     matched reference words / all reference words
     AAE        mean absolute onset error in seconds, over matched words
                (the standard lyrics-alignment metric)
@@ -29,6 +45,7 @@ Metrics:
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 import re
 import statistics
@@ -37,6 +54,10 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 WORD_TAG = re.compile(r"<(\d+):(\d+(?:[.:]\d+)?)>([^<]*)")
+
+EARLY, LATE = 0.3, 0.2  # on-time window: highlighted up to EARLY s before the word is sung, LATE s after
+NEAR = 1.0              # "readable" window, either way
+LINE_START = 0.5        # line starts this close count as the same
 
 
 def norm(word: str) -> str:
@@ -103,13 +124,110 @@ def score(lrc: Path) -> dict | None:
     }
 
 
+def ux_score(lrc: Path) -> dict | None:
+    """The default, pairing-free report (see the module docstring)."""
+    truth = load_truth(lrc)
+    if truth is None:
+        return None
+    hyp, _ = parse_lrc(lrc)
+
+    def onsets(words) -> dict[str, list[float]]:
+        table: dict[str, list[float]] = {}
+        for w, t, _ in words:
+            table.setdefault(norm(w), []).append(t)
+        for times in table.values():
+            times.sort()
+        return table
+
+    shown, sung = onsets(hyp), onsets(truth)
+
+    def offsets(word: str, t: float, table) -> list[float]:
+        """(onset - t) for each onset of word in table within NEAR of t."""
+        times = table.get(norm(word), [])
+        i, j = bisect.bisect_left(times, t - NEAR), bisect.bisect_right(times, t + NEAR)
+        return [x - t for x in times[i:j]]
+
+    on_time = near = 0
+    lines, line = [], []  # per sung line: whether each word is shown within NEAR
+    for w, t, ends in truth:
+        found = offsets(w, t, shown)
+        on_time += any(-EARLY <= d <= LATE for d in found)
+        near += bool(found)
+        line.append(bool(found))
+        if ends:
+            lines.append(line)
+            line = []
+    if line:
+        lines.append(line)
+    has_lines = any(ends for *_, ends in truth)
+    stray = sum(not offsets(w, t, sung) for w, t, _ in hyp)
+
+    def starts(words) -> list[float]:
+        out, new = [], True
+        for _, t, ends in words:
+            if new:
+                out.append(t)
+            new = ends
+        return out
+
+    def hits(a: list[float], b: list[float]) -> float:
+        return sum(any(abs(x - y) <= LINE_START for y in b) for x in a) / len(a) if a else 0.0
+
+    hyp_starts, true_starts = starts(hyp), starts(truth)
+    return {
+        "song": lrc.stem,
+        "on_time": on_time / len(truth),
+        "near": near / len(truth),
+        "bad_lines": sum(sum(l) < len(l) / 2 for l in lines) if has_lines else None,
+        "lines": len(lines) if has_lines else None,
+        "stray": stray / len(hyp) if hyp else 0.0,
+        "start_p": hits(hyp_starts, true_starts) if has_lines else None,
+        "start_r": hits(true_starts, hyp_starts) if has_lines else None,
+    }
+
+
+def print_ux(rows: list[dict]) -> int:
+    if not rows:
+        print("no .lrc files with ground truth found", file=sys.stderr)
+        return 1
+
+    def pct(v) -> str:
+        return f"{'-':>8}" if v is None else f"{v:>8.0%}"
+
+    def mean(key: str):
+        vals = [r[key] for r in rows if r[key] is not None]
+        return statistics.fmean(vals) if vals else None
+
+    header = f"{'song':30} {'on-time':>8} {'<=1s':>8} {'bad lines':>10} {'stray':>8} {'starts P':>8} {'starts R':>8}"
+    print(header)
+    print("-" * len(header))
+    for r in rows:
+        bad = "-" if r["bad_lines"] is None else f"{r['bad_lines']}/{r['lines']}"
+        print(f"{r['song'][:30]:30} {pct(r['on_time'])} {pct(r['near'])} {bad:>10} {pct(r['stray'])}"
+              f" {pct(r['start_p'])} {pct(r['start_r'])}")
+    print("-" * len(header))
+    bad_total = sum(r["bad_lines"] or 0 for r in rows)
+    line_total = sum(r["lines"] or 0 for r in rows)
+    print(f"{'mean over songs':30} {pct(mean('on_time'))} {pct(mean('near'))} {f'{bad_total}/{line_total}':>10}"
+          f" {pct(mean('stray'))} {pct(mean('start_p'))} {pct(mean('start_r'))}")
+    worst = min(rows, key=lambda r: r["on_time"])
+    with_lines = [r for r in rows if r["bad_lines"] is not None]
+    clean = sum(r["bad_lines"] == 0 for r in with_lines)
+    print(f"worst song: {worst['song']} ({worst['on_time']:.0%} on time); "
+          f"songs with no bad lines: {clean}/{len(with_lines)}")
+    return 0
+
+
 def main() -> int:
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8", errors="replace")
 
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("lrc", nargs="+", type=Path)
+    parser.add_argument("--classic", action="store_true", help="the older, pairing-based metrics")
     args = parser.parse_args()
+    if not args.classic:
+        return print_ux([r for r in (ux_score(p) for p in args.lrc) if r])
 
     rows = [r for r in (score(p) for p in args.lrc) if r]
     if not rows:
