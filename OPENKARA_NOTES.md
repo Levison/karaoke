@@ -272,6 +272,30 @@ extract each mix as `test_songs/<name>.m4a` (the command is in the script's
 docstring). The `.stem.mp4` also carries the clean vocals (stream 4), which
 would show how much Demucs costs.
 
+**Commercial metal (2026-09-26).** Three well-known songs, for how the
+pipeline copes with real studio metal mixes: a fast NWOBHM gallop, thrash
+with rapid-fire vocals, and shouted/sung verses that swap mid-line. They're
+commercial releases, so bring your own copy: rip or buy it and save it as
+`test_songs/<stem>.<ext>` (audio in `test_songs/` is git-ignored). Tag artist
+and title so the LRCLIB lookup finds the lyrics; all three are there with
+synced lyrics.
+
+| file stem | album (year) | LRCLIB duration | style |
+|---|---|---|---|
+| `Iron_Maiden_-_Aces_High` | *Powerslave* (1984) | 270–272 s | NWOBHM, gallop, high male vocals |
+| `King_Gizzard_-_Self-Immolate` | *Infest the Rats' Nest* (2019) | 269 s | thrash, fast dense vocals |
+| `System_Of_A_Down_-_B.Y.O.B.` | *Mezmerize* (2005) | 255 s | alt metal, shouted/sung trade-offs |
+
+Get the studio cut: LRCLIB also holds live Gizzard versions (7–11 min) and a
+188 s *B.Y.O.B.* edit, and the ±3 s duration match skips the wrong length. No
+word timings, so `eval_lrc.py` skips these like the Jamendo metal set. LRCLIB's
+synced lines could serve as line-start truth if that's ever worth wiring up.
+
+To pull audio from YouTube for local testing, copy `fetch_youtube_audio.example.json`
+to `fetch_youtube_audio.json` (git-ignored), fill in the stems/search queries you
+want, then `uv run fetch_youtube_audio.py` (or `--file path/to/list.json`). The
+repo does not ship a one-click commercial track list.
+
 ### Known lyrics (2026-09-26)
 
 On the six metal songs, every lyric line the pipeline missed still had about
@@ -282,10 +306,21 @@ now only locate each lyric line, and the aligner times the real lyric words
 
 Where lyrics come from, in order: `<stem>.lyrics.txt` next to the audio (or
 `--lyrics-dir`), then LRCLIB by artist/title tags and duration (±3 s; a title
-suffix like "(2017 Version)" is dropped if the full title finds nothing). An
-LRCLIB hit is saved as `<stem>.lyrics.txt`, so a wrong word can be fixed there
-and the song rerun with `--force`. Sidecars are git-ignored. `--no-lrclib`
-disables the lookup; `--no-lyrics` restores the old behaviour.
+suffix like "(2017 Version)" is dropped if the full title finds nothing), then
+Jamendo's API the same way (exact title, ignoring case), for Jamendo's Creative
+Commons songs. Jamendo needs a free client ID from devportal.jamendo.com in the
+`JAMENDO_CLIENT_ID` environment variable and is skipped without one. A hit is
+saved as `<stem>.lyrics.txt`, so a wrong word can be fixed there and the song
+rerun with `--force`. Sidecars are git-ignored. `--offline` skips both online
+lookups; `--no-lyrics` restores the old behaviour.
+
+Jamendo quirks: a title search (`namesearch`) ignores the `artist_name` filter
+and returns 50 tracks from anyone, so candidates come from the artist's
+catalogue (`/artists` → `/tracks?artist_id=`) plus a title search, filtered on
+artist, title and duration here. The Rinn's catalogue comes back empty, but the
+title search finds their tracks. One lookup missed a track and found it on
+retry with no error reported, so a miss isn't proof the lyrics aren't there.
+All six metal songs got their lyrics from Jamendo; LRCLIB had none of them.
 
 20 JamendoLyrics songs, with their reference lyrics as the known lyrics (best
 case), against Whisper's words:

@@ -1,0 +1,12 @@
+{
+  "out_dir": "test_songs",
+  "tracks": [
+    {
+      "stem": "Artist_-_Song_Title",
+      "artist": "Artist",
+      "title": "Song Title",
+      "duration": 240,
+      "query": "Artist Song Title"
+    }
+  ]
+}

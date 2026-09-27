@@ -8,6 +8,10 @@ __pycache__/
 # the public-domain 78s. Ground truth is tracked.
 test_songs/*.mp3
 test_songs/*.ogg
+test_songs/*.m4a
+test_songs/*.flac
+test_songs/*.opus
+test_songs/*.wav
 
 # Generated lyrics: regenerate with `uv run karaoke_lrc.py`. Not committed: several
 # test songs are CC "no derivatives", and these are derived from them.
@@ -16,6 +20,11 @@ test_songs/*.lrc
 # Known lyrics that karaoke_lrc.py fetched from LRCLIB (or that you wrote). They're
 # the songs' lyrics, so they stay local.
 *.lyrics.txt
+
+# YouTube fetch lists you maintain locally (see fetch_youtube_audio.example.json).
+fetch_youtube_audio.json
+fetch_youtube_audio.*.json
+!fetch_youtube_audio.example.json
 
 # MUSDB18 ground truth: lyrics of songs licensed for academic use only, so not
 # published here. Regenerate with `uv run musdb_truth.py`.
