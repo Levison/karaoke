@@ -32,7 +32,6 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 LRCLIB_SEARCH = "https://lrclib.net/api/search"
-JAMENDO_ARTISTS = "https://api.jamendo.com/v3.0/artists/"
 JAMENDO_TRACKS = "https://api.jamendo.com/v3.0/tracks/"
 USER_AGENT = "karaoke_lrc (https://github.com/Levison/karaoke)"  # LRCLIB asks clients to name themselves
 DURATION_SLACK = 3.0  # seconds; a bigger difference is probably another version (live, radio edit)
@@ -91,23 +90,30 @@ def fetch_jamendo(artist: str, title: str, duration: float) -> str | None:
     """Lyrics of the Jamendo track by this artist with this title (both ignoring
     case) closest in duration, or None. Also None without JAMENDO_CLIENT_ID.
 
-    Candidates come from the artist's catalogue and from a title search. Neither
-    alone is enough: the title search ignores the artist filter and returns 50
-    tracks from anyone, and some artists' catalogues come back empty (The Rinn's)
-    even though a title search finds their tracks."""
+    Jamendo's API sometimes answers a query with no results (still reporting
+    success), whatever the kind of query: the same lookup found a song on one try
+    and missed it on the next. So several query styles are tried, twice over,
+    until one returns the track. Results are filtered here on artist, title and
+    duration, since the title search ignores the artist filter."""
     client_id = os.environ.get("JAMENDO_CLIENT_ID", "").strip()
     if not client_id or not artist or not title:
         return None
-    base = {"client_id": client_id, "format": "json"}
-    tracks = []
-    for found in jamendo(JAMENDO_ARTISTS, {**base, "name": artist}) or []:
-        tracks += jamendo(JAMENDO_TRACKS, {**base, "artist_id": found["id"], "include": "lyrics", "limit": 200}) or []
-    tracks += jamendo(JAMENDO_TRACKS, {**base, "namesearch": title, "include": "lyrics", "limit": 200}) or []
-    hits = [r for r in tracks
-            if (r.get("lyrics") or "").strip()
-            and r.get("artist_name", "").casefold() == artist.casefold()
-            and r.get("name", "").casefold() == title.casefold()
-            and abs((r.get("duration") or 0) - duration) <= DURATION_SLACK]
+    base = {"client_id": client_id, "format": "json", "include": "lyrics"}
+    queries = [
+        {"artist_name": artist, "name": title},        # exact match
+        {"artist_name": artist, "limit": 200},         # the artist's catalogue
+        {"search": f"{artist} {title}", "limit": 50},  # free text
+        {"namesearch": title, "limit": 200},           # any artist
+    ]
+    hits = []
+    for query in queries * 2:
+        hits = [r for r in jamendo(JAMENDO_TRACKS, {**base, **query}) or []
+                if (r.get("lyrics") or "").strip()
+                and r.get("artist_name", "").casefold() == artist.casefold()
+                and r.get("name", "").casefold() == title.casefold()
+                and abs((r.get("duration") or 0) - duration) <= DURATION_SLACK]
+        if hits:
+            break
     if not hits:
         return None
     # Jamendo's lyrics carry HTML line breaks.
