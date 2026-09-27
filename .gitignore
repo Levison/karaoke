@@ -23,3 +23,6 @@ test_songs/groundtruth/* - *
 
 # OpenKara's library (database, imported media, stems) when it's pointed at test_songs/
 test_songs/OpenKara/
+
+# Jamendo client id for local API calls. Never commit.
+jamendo.env
