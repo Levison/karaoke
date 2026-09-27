@@ -12,13 +12,17 @@ Lyrics come from, in order:
   1. <stem>.lyrics.txt next to the audio (or <stem>.txt / <stem>.lyrics.txt in
      --lyrics-dir). Plain text, one lyric line per line.
   2. LRCLIB (lrclib.net, the lyrics database OpenKara uses), searched by the
-     audio's artist and title tags and matched on duration. A hit is saved as
-     <stem>.lyrics.txt, so a wrong word can be fixed there and the song rerun.
+     audio's artist and title tags and matched on duration.
+  3. Jamendo (jamendo.com), for its Creative Commons songs, the same way. Needs a
+     free API client ID (devportal.jamendo.com) in JAMENDO_CLIENT_ID.
+A hit from either is saved as <stem>.lyrics.txt, so a wrong word can be fixed
+there and the song rerun.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import urllib.parse
@@ -28,6 +32,8 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 LRCLIB_SEARCH = "https://lrclib.net/api/search"
+JAMENDO_ARTISTS = "https://api.jamendo.com/v3.0/artists/"
+JAMENDO_TRACKS = "https://api.jamendo.com/v3.0/tracks/"
 USER_AGENT = "karaoke_lrc (https://github.com/Levison/karaoke)"  # LRCLIB asks clients to name themselves
 DURATION_SLACK = 3.0  # seconds; a bigger difference is probably another version (live, radio edit)
 
@@ -72,15 +78,8 @@ def fetch_lrclib(artist: str, title: str, duration: float) -> str | None:
 
 
 def search_lrclib(artist: str, title: str, duration: float) -> str | None:
-    query = urllib.parse.urlencode({"artist_name": artist, "track_name": title})
-    request = urllib.request.Request(f"{LRCLIB_SEARCH}?{query}", headers={"User-Agent": USER_AGENT})
-    try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            results = json.load(response)
-    except (OSError, ValueError) as exc:
-        print(f"    LRCLIB lookup failed: {exc}", file=sys.stderr)
-        return None
-    hits = [r for r in results
+    results = get_json(LRCLIB_SEARCH, {"artist_name": artist, "track_name": title}, "LRCLIB")
+    hits = [r for r in results or []
             if r.get("plainLyrics") and not r.get("instrumental")
             and abs((r.get("duration") or 0) - duration) <= DURATION_SLACK]
     if not hits:
@@ -88,8 +87,60 @@ def search_lrclib(artist: str, title: str, duration: float) -> str | None:
     return min(hits, key=lambda r: abs(r["duration"] - duration))["plainLyrics"]
 
 
+def fetch_jamendo(artist: str, title: str, duration: float) -> str | None:
+    """Lyrics of the Jamendo track by this artist with this title (both ignoring
+    case) closest in duration, or None. Also None without JAMENDO_CLIENT_ID.
+
+    Candidates come from the artist's catalogue and from a title search. Neither
+    alone is enough: the title search ignores the artist filter and returns 50
+    tracks from anyone, and some artists' catalogues come back empty (The Rinn's)
+    even though a title search finds their tracks."""
+    client_id = os.environ.get("JAMENDO_CLIENT_ID", "").strip()
+    if not client_id or not artist or not title:
+        return None
+    base = {"client_id": client_id, "format": "json"}
+    tracks = []
+    for found in jamendo(JAMENDO_ARTISTS, {**base, "name": artist}) or []:
+        tracks += jamendo(JAMENDO_TRACKS, {**base, "artist_id": found["id"], "include": "lyrics", "limit": 200}) or []
+    tracks += jamendo(JAMENDO_TRACKS, {**base, "namesearch": title, "include": "lyrics", "limit": 200}) or []
+    hits = [r for r in tracks
+            if (r.get("lyrics") or "").strip()
+            and r.get("artist_name", "").casefold() == artist.casefold()
+            and r.get("name", "").casefold() == title.casefold()
+            and abs((r.get("duration") or 0) - duration) <= DURATION_SLACK]
+    if not hits:
+        return None
+    # Jamendo's lyrics carry HTML line breaks.
+    text = min(hits, key=lambda r: abs(r["duration"] - duration))["lyrics"]
+    return re.sub(r"<br\s*/?>", "\n", text.replace("\r\n", "\n"), flags=re.IGNORECASE)
+
+
+def jamendo(url: str, params: dict) -> list[dict] | None:
+    """Results of a Jamendo API call, or None (with a note) if it failed."""
+    reply = get_json(url, params, "Jamendo")
+    if not isinstance(reply, dict):
+        return None
+    headers = reply.get("headers", {})
+    if headers.get("status") != "success":
+        print(f"    Jamendo lookup failed: {headers.get('error_message')}", file=sys.stderr)
+        return None
+    return reply.get("results", [])
+
+
+def get_json(url: str, params: dict, name: str):
+    """GET url?params as JSON, or None (with a note) if the request fails."""
+    request = urllib.request.Request(f"{url}?{urllib.parse.urlencode(params)}", headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return json.load(response)
+    except (OSError, ValueError) as exc:
+        # Neither error type's message includes the URL, so a client ID in the query isn't printed.
+        print(f"    {name} lookup failed: {exc}", file=sys.stderr)
+        return None
+
+
 def find_lyrics(audio: Path, artist: str, title: str, duration: float,
-                lyrics_dir: Path | None, use_lrclib: bool) -> tuple[list[str], str] | None:
+                lyrics_dir: Path | None, online: bool) -> tuple[list[str], str] | None:
     """(lyric lines, where they came from), or None when there are none to use."""
     sidecar = audio.with_name(audio.stem + ".lyrics.txt")
     local = [sidecar]
@@ -99,9 +150,12 @@ def find_lyrics(audio: Path, artist: str, title: str, duration: float,
         if path.is_file():
             return clean_lyrics(path.read_text(encoding="utf-8-sig")), path.name
 
-    if use_lrclib and (text := fetch_lrclib(artist, title, duration)):
-        sidecar.write_text(text.rstrip() + "\n", encoding="utf-8")
-        return clean_lyrics(text), f"LRCLIB, saved as {sidecar.name}"
+    if not online:
+        return None
+    for name, fetch in (("LRCLIB", fetch_lrclib), ("Jamendo", fetch_jamendo)):
+        if text := fetch(artist, title, duration):
+            sidecar.write_text(text.rstrip() + "\n", encoding="utf-8")
+            return clean_lyrics(text), f"{name}, saved as {sidecar.name}"
     return None
 
 

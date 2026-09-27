@@ -6,10 +6,10 @@ Pipeline:
     audio -> (optional) Demucs vocal isolation -> WhisperX word timestamps
           -> enhanced LRC with <mm:ss.xx> per-word tags
 
-When the song's lyrics are known (<stem>.lyrics.txt next to the audio, or found on
-LRCLIB and saved there), Whisper's words only locate each lyric line and the real
-lyrics are timed instead; see known_lyrics.py. Edit <stem>.lyrics.txt and rerun
-with --force to fix a wrong word.
+When the song's lyrics are known (<stem>.lyrics.txt next to the audio, or found
+on LRCLIB or Jamendo and saved there), Whisper's words only locate each lyric
+line and the real lyrics are timed instead; see known_lyrics.py. Edit
+<stem>.lyrics.txt and rerun with --force to fix a wrong word.
 
 The .lrc is written next to the source audio with the same stem. Import both into
 OpenKara together: it copies the audio to media/<sha256>.<ext>, so it matches the
@@ -25,7 +25,7 @@ Usage:
     uv run karaoke_lrc.py canción.mp3 --language es   # non-English (default: en)
     uv run karaoke_lrc.py song.mp3 --align-model WAV2VEC2_ASR_BASE_960H  # smaller aligner
     uv run karaoke_lrc.py *.mp3 --lyrics-dir lyrics/  # known lyrics as lyrics/<stem>.txt
-    uv run karaoke_lrc.py song.mp3 --no-lrclib        # only local lyrics files
+    uv run karaoke_lrc.py song.mp3 --offline          # only local lyrics files
     uv run karaoke_lrc.py song.mp3 --no-lyrics        # Whisper's words only
 
 Install (on the GPU machine):
@@ -586,7 +586,7 @@ def lookup_lyrics(audio: Path, duration: float, args: argparse.Namespace) -> lis
     from fix_lrc_tags import read_tags
 
     title, artist = read_tags(audio)
-    found = find_lyrics(audio, artist, title, duration, args.lyrics_dir, not args.no_lrclib)
+    found = find_lyrics(audio, artist, title, duration, args.lyrics_dir, not args.offline)
     if not found or not found[0]:
         print("    no known lyrics, using Whisper's words")
         return None
@@ -635,7 +635,8 @@ def main() -> int:
         help="read known lyrics from DIR/<stem>.txt or DIR/<stem>.lyrics.txt "
              "(default: <stem>.lyrics.txt next to the audio)",
     )
-    parser.add_argument("--no-lrclib", action="store_true", help="don't look lyrics up on LRCLIB")
+    parser.add_argument("--offline", action="store_true",
+                        help="don't look lyrics up online (LRCLIB, and Jamendo if JAMENDO_CLIENT_ID is set)")
     parser.add_argument("--no-lyrics", action="store_true",
                         help="ignore known lyrics and use Whisper's words (the old behaviour)")
     args = parser.parse_args()
