@@ -147,9 +147,9 @@ songs are CC "no derivatives"; commercial ones are bring-your-own).
 - **Jamendo metal** (no word truth): Avenger Kills – Metal child / Rotten legion
   / The trap / Feeling my pain (Jamendo ids 1794820 / 1794821 / 1794825 /
   1794822), The Rinn – Into The Dark / Mirror (2017 Version) (1530457 /
-  1530452). Download: `curl -L -o <stem>.mp3
-  https://prod-1.storage.jamendo.com/download/track/<id>/mp32/`. All get lyrics
-  from Jamendo; before known lyrics, Whisper got 83–95% of their words.
+  1530452). Download and tag with `uv run fetch_jamendo_audio.py`, from a list
+  in `fetch_jamendo_audio.json` (copy the `.example.json`; git-ignored). All get
+  lyrics from Jamendo; before known lyrics, Whisper got 83–95% of their words.
 - **MUSDB18 metal** (hand-set word onsets,
   [Zenodo 15547046](https://zenodo.org/records/15547046)): Hollow Ground – Ill
   Fate, James Elder & Mark M Thompson – The English Actor, Timboz – Pony

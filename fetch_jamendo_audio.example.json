@@ -1,0 +1,11 @@
+{
+  "out_dir": "test_songs",
+  "tracks": [
+    {
+      "id": 1794820,
+      "stem": "Artist_-_Song",
+      "artist": "Artist",
+      "title": "Song"
+    }
+  ]
+}

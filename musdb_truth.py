@@ -29,6 +29,7 @@ Audio isn't included. MUSDB18 is on Zenodo behind an access request (academic
 use only): https://sigsep.github.io/datasets/musdb.html. Each song is a
 "<name>.stem.mp4"; stream 0 is the mix, stream 4 the vocals. Extract the mix
 without re-encoding so the file stem matches the ground truth:
+    uv run musdb_extract.py "Timboz - Pony"   # needs MUSDB18_PATH; or manually:
     ffmpeg -i "Timboz - Pony.stem.mp4" -map 0:0 -c copy "test_songs/Timboz - Pony.m4a"
 
 Usage:

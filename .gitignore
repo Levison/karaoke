@@ -26,6 +26,10 @@ fetch_youtube_audio.json
 fetch_youtube_audio.*.json
 !fetch_youtube_audio.example.json
 
+fetch_jamendo_audio.json
+fetch_jamendo_audio.*.json
+!fetch_jamendo_audio.example.json
+
 # MUSDB18 ground truth: lyrics of songs licensed for academic use only, so not
 # published here. Regenerate with `uv run musdb_truth.py`.
 test_songs/groundtruth/* - *
