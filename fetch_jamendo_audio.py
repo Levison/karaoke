@@ -64,7 +64,8 @@ def main() -> int:
     parser.add_argument("-f", "--file", type=Path, default=DEFAULT_LIST)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    sys.stdout.reconfigure(errors="replace")
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")
 
     if not args.file.is_file():
         example = ROOT / "fetch_jamendo_audio.example.json"

@@ -7,15 +7,22 @@ __pycache__/
 # (datasets/jamendolyrics/jamendolyrics, subsets/en/mp3/); see OPENKARA_NOTES.md for
 # the public-domain 78s. Ground truth is tracked.
 test_songs/*.mp3
+test_songs/**/*.mp3
 test_songs/*.ogg
+test_songs/**/*.ogg
 test_songs/*.m4a
+test_songs/**/*.m4a
 test_songs/*.flac
+test_songs/**/*.flac
 test_songs/*.opus
+test_songs/**/*.opus
 test_songs/*.wav
+test_songs/**/*.wav
 
 # Generated lyrics: regenerate with `uv run karaoke_lrc.py`. Not committed: several
 # test songs are CC "no derivatives", and these are derived from them.
 test_songs/*.lrc
+test_songs/**/*.lrc
 
 # Known lyrics that karaoke_lrc.py fetched from LRCLIB (or that you wrote). They're
 # the songs' lyrics, so they stay local.

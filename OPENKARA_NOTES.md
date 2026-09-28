@@ -134,6 +134,10 @@ Tried and not adopted, all measured on this benchmark:
   the gap with the lines as Whisper's prompt: none beat aligning the gap as one.
 - Dropping lines too many to fit their gap; a stricter repeat check (the repeats
   it adds are mostly real).
+- `--demucs-model htdemucs_ft` (the fine-tuned model; OpenKara ships the same
+  Demucs as ONNX, so its splitter is no different): no better on Whisper's words
+  (102 vs 103 bad lines, 75% on time both), worse on reference lyrics (46 vs 33,
+  mostly Avercage 9 → 15 and LUNABLIND 1 → 5), and about twice as slow end to end.
 - A scream detector (loud, weakly pitched vocal stem) to show syllables instead
   of words: it worked (72–81% of two fully harsh songs flagged, 0–3% of clean
   ones), but known lyrics already looked fine on the screamy songs checked.

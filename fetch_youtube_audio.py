@@ -293,7 +293,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    sys.stdout.reconfigure(errors="replace")
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")
 
     list_path = args.file
     if list_path is None and not args.query:
